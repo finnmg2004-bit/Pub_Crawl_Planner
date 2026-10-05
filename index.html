@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pub Crawl Planner</title>
+<style>
+  :root { --bg:#faf6ef; --card:#fff; --ink:#2b2118; --muted:#7a6a58; --accent:#b8621b; --ok:#2f7d32; --no:#b3261e; --line:#eadfce; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#1b1612; --card:#26201a; --ink:#f3ebe0; --muted:#b5a48f; --accent:#e89a4f; --ok:#7bc47f; --no:#f28b82; --line:#3a3027; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.5 system-ui, sans-serif; }
+  main { max-width: 920px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { margin:0; font-size: 2rem; }
+  .sub { color:var(--muted); margin: 4px 0 24px; }
+  form, .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:20px; margin-bottom:20px; }
+  .grid { display:grid; grid-template-columns: 1fr 1fr; gap:14px; }
+  @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } }
+  label { display:block; font-size:.85rem; color:var(--muted); margin-bottom:4px; }
+  input { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px; font:inherit; background:var(--bg); color:var(--ink); }
+  button { margin-top:16px; background:var(--accent); color:#fff; border:0; border-radius:8px; padding:12px 20px; font:600 1rem system-ui; cursor:pointer; }
+  button:disabled { opacity:.6; cursor:wait; }
+  #log { font: 14px ui-monospace, monospace; white-space: pre-wrap; margin:0; }
+  table { width:100%; border-collapse: collapse; font-size:.95rem; }
+  th, td { text-align:left; padding:10px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:600; font-size:.8rem; text-transform:uppercase; }
+  .ok { color:var(--ok); font-weight:600; } .no { color:var(--no); }
+  .quote { color:var(--muted); font-size:.8rem; font-style:italic; display:block; }
+  .stats { display:flex; gap:24px; flex-wrap:wrap; margin-bottom:14px; }
+  .stats b { font-size:1.4rem; display:block; }
+  a { color:var(--accent); }
+  .maps { display:inline-block; margin-top:14px; font-weight:600; }
+  .tbl { overflow-x:auto; }
+</style>
+</head>
+<body>
+<main>
+  <h1>🍺 Pub Crawl Planner</h1>
+  <p class="sub">Give it a start, a finish and what you want to eat or drink. TinyFish pulls every pub between the two from OpenStreetMap, reads each pub's own website to check the food, and plans the walking route.</p>
+
+  <form id="f">
+    <div class="grid">
+      <div><label>Start</label><input name="start" value="Euston Square, London" required></div>
+      <div><label>Finish</label><input name="end" value="Camden Town, London" required></div>
+      <div><label>Number of pubs</label><input name="n_pubs" type="number" min="1" max="8" value="3"></div>
+      <div><label>Requirements (comma separated)</label><input name="requirements" value="lunch, tea" placeholder="lunch, tea, sunday roast, beer garden"></div>
+    </div>
+    <button id="go">Plan my crawl</button>
+  </form>
+
+  <div class="card" id="progress" hidden><pre id="log"></pre></div>
+  <div class="card" id="out" hidden></div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+$("#f").onsubmit = async e => {
+  e.preventDefault();
+  const body = Object.fromEntries(new FormData(e.target));
+  $("#go").disabled = true; $("#go").textContent = "Planning… (~15s)";
+  $("#progress").hidden = false; $("#out").hidden = true; $("#log").textContent = "Starting TinyFish…";
+  const { job_id } = await (await fetch("/plan", { method: "POST", body: JSON.stringify(body) })).json();
+  const t0 = Date.now();
+  const timer = setInterval(async () => {
+    const job = await (await fetch("/status/" + job_id)).json();
+    $("#log").textContent = job.log.join("\n") + `\n⏱ ${Math.round((Date.now() - t0) / 1000)}s`;
+    if (!job.done) return;
+    clearInterval(timer);
+    $("#go").disabled = false; $("#go").textContent = "Plan my crawl";
+    if (job.error) { $("#log").textContent += "\n❌ " + job.error; return; }
+    render(job.result, job_id);
+  }, 1500);
+};
+
+async function exact(jobId, btn) {
+  btn.disabled = true; btn.textContent = "🤖 TinyFish Agent is reading Google Maps… (1-2 min)";
+  const res = await (await fetch("/route/" + jobId, { method: "POST" })).json();
+  if (res.error) { btn.textContent = "❌ " + res.error; btn.disabled = false; return; }
+  render(res, jobId);
+}
+
+async function watch(jobId, btn) {
+  btn.disabled = true; btn.textContent = "Setting up TinyFish Monitors…";
+  const res = await (await fetch("/monitor/" + jobId, { method: "POST" })).json();
+  btn.textContent = res.error ? "❌ " + res.error
+    : `🔔 Watching ${res.monitors.length} pub websites daily at 10am for menu, hours & event changes`;
+}
+
+function render(r, jobId) {
+  const reqs = r.requirements;
+  const rows = r.pubs.map((p, i) => `
+    <tr>
+      <td><b>${i + 1}</b></td>
+      <td><b>${esc(p.name)}</b><br><span class="quote">${esc(p.address)}</span>
+          ${p.website ? `<a href="${esc(p.website)}" target="_blank">website ↗</a>` : ""}</td>
+      <td>${p.rating ? "★ " + p.rating : "–"}</td>
+      <td>${p.walk ? `${p.walk.minutes} min<br><span class="quote">${esc(p.walk.distance || "")}</span>` : "–"}</td>
+      ${reqs.map(q => p.matches[q]
+        ? `<td><span class="ok">✓</span><span class="quote">“…${esc(p.matches[q].slice(0, 90))}…”</span></td>`
+        : `<td><span class="no">✗</span></td>`).join("")}
+    </tr>`).join("");
+  $("#out").innerHTML = `
+    <div class="stats">
+      <div><b>${r.pubs.length}</b>pubs</div>
+      <div><b>${r.estimated ? "~" : ""}${r.total_minutes ?? "?"} min</b>walking${r.estimated ? " (estimate)" : " (Google Maps)"}</div>
+      <div><b>${esc(r.total_distance ?? "?")}</b>distance</div>
+    </div>
+    <div class="tbl"><table>
+      <tr><th>#</th><th>Pub</th><th>Rating</th><th>Walk</th>${reqs.map(q => `<th>${esc(q)}</th>`).join("")}</tr>
+      <tr><td>🚩</td><td colspan="${3 + reqs.length}">Start: ${esc(r.start)}</td></tr>
+      ${rows}
+      <tr><td>🏁</td><td colspan="2">Finish: ${esc(r.end)}</td><td>${r.final_leg ? r.final_leg.minutes + " min" : ""}</td><td colspan="${reqs.length}"></td></tr>
+    </table></div>
+    <a class="maps" href="${esc(r.maps_link)}" target="_blank">🗺 Open the walking route in Google Maps ↗</a>
+    <br>${r.estimated ? `<button onclick="exact('${jobId}', this)">🤖 Get exact walking times (Agent)</button> ` : ""}<button onclick="watch('${jobId}', this)">🔔 Watch these pubs for menu &amp; event changes</button>
+    <p class="quote">✓ = found on the pub's live website (quote shown). Pubs: TinyFish Fetch on OpenStreetMap · missing websites: TinyFish Search · food check: TinyFish Fetch · exact walking times: TinyFish Agent on Google Maps · daily change alerts: TinyFish Monitor.</p>`;
+  $("#out").hidden = false;
+}
+</script>
+</body>
+</html>

@@ -1,5 +1,7 @@
 # 🍺 Pub Crawl Planner — built with TinyFish
 
+Edit: this submission won me second prize at the UCL AI society, Tiny Fish build night
+
 Give it a start, a finish, how many pubs, and what you want (lunch, tea, Sunday roast, beer garden…).
 It plans a walking pub crawl using **live web data**, and checks each pub's own website for the food and drink you asked for.
 
